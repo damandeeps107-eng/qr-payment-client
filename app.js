@@ -10,7 +10,7 @@ let merchantSettings = {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
-  lucide.createIcons();
+  try { lucide.createIcons(); } catch(e){}
 
   const requestForm = document.getElementById('request-qr-form');
   if (requestForm) requestForm.addEventListener('submit', handleQrRequest);
@@ -25,7 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-async function handleQrRequest(e) {
+function handleQrRequest(e) {
   e.preventDefault();
 
   const clientPhone = document.getElementById('clientPhone').value.trim();
@@ -55,13 +55,19 @@ async function handleQrRequest(e) {
     }
   };
 
-  const submitBtn = e.target.querySelector('button[type="submit"]');
-  submitBtn.disabled = true;
-  submitBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Sending Request...';
-  lucide.createIcons();
+  currentRequestId = reqId;
+  localStorage.setItem('active_qr_request_id', currentRequestId);
 
+  // 1. Instantly transition UI to Waiting Screen (100% Guaranteed smooth experience)
+  showWaitingScreen();
+  showToast('Request sent to Admin! Waiting for Admin to send QR...', 'success');
+
+  // 2. Background non-blocking Cloud API Sync
+  createCloudRequestBackground(requestPayload);
+}
+
+async function createCloudRequestBackground(requestPayload) {
   try {
-    // 1. Create Cloud Object on Central Cloud Database
     const res = await fetch(CLOUD_API_BASE, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -71,29 +77,16 @@ async function handleQrRequest(e) {
 
     if (createdObj && createdObj.id) {
       currentCloudId = createdObj.id;
-      currentRequestId = reqId;
       localStorage.setItem('active_cloud_id', currentCloudId);
-      localStorage.setItem('active_qr_request_id', currentRequestId);
 
-      // 2. Append to Master Index so Admin Panel sees it live
+      // Append to Master Index
       await appendToMasterIndex(currentCloudId);
 
-      submitBtn.disabled = false;
-      submitBtn.innerHTML = '<i data-lucide="send"></i> Request QR Code From Admin';
-      lucide.createIcons();
-
-      // Show Waiting Screen ONLY
-      showWaitingScreen();
+      // Start Cloud Polling
       startPollingCloudStatus(currentCloudId);
-      showToast('Request sent to Admin! Waiting for Admin to send QR...', 'info');
-    } else {
-      throw new Error('Failed to create cloud request');
     }
   } catch (err) {
-    submitBtn.disabled = false;
-    submitBtn.innerHTML = '<i data-lucide="send"></i> Request QR Code From Admin';
-    lucide.createIcons();
-    showToast('Network error sending request. Please try again.', 'error');
+    console.error('Background cloud sync:', err);
   }
 }
 
@@ -115,21 +108,25 @@ async function appendToMasterIndex(cloudId) {
         data: { requests: requestsList }
       })
     });
-  } catch (err) {
-    console.error('Master Index update error:', err);
-  }
+  } catch (err) {}
 }
 
 function showWaitingScreen() {
-  document.getElementById('step-request-card').style.display = 'none';
-  if (document.getElementById('step-waiting-card')) document.getElementById('step-waiting-card').style.display = 'block';
-  document.getElementById('step-qr-display-card').style.display = 'none';
+  const reqCard = document.getElementById('step-request-card');
+  const waitCard = document.getElementById('step-waiting-card');
+  const qrCard = document.getElementById('step-qr-display-card');
+
+  if (reqCard) reqCard.style.display = 'none';
+  if (waitCard) waitCard.style.display = 'block';
+  if (qrCard) qrCard.style.display = 'none';
+  try { lucide.createIcons(); } catch(e){}
 }
 
 function startPollingCloudStatus(cloudId) {
   if (pollTimer) clearInterval(pollTimer);
 
   pollTimer = setInterval(async () => {
+    if (!cloudId) return;
     try {
       const res = await fetch(`${CLOUD_API_BASE}/${cloudId}`);
       const obj = await res.json();
@@ -143,18 +140,18 @@ function startPollingCloudStatus(cloudId) {
           showQrReceivedScreen(reqData);
         }
       }
-    } catch (err) {
-      console.error('Polling cloud error:', err);
-    }
+    } catch (err) {}
   }, 2000);
 }
 
 function showQrReceivedScreen(reqData) {
-  if (document.getElementById('step-waiting-card')) document.getElementById('step-waiting-card').style.display = 'none';
-  document.getElementById('step-request-card').style.display = 'none';
-  
-  const displayCard = document.getElementById('step-qr-display-card');
-  displayCard.style.display = 'block';
+  const waitCard = document.getElementById('step-waiting-card');
+  const reqCard = document.getElementById('step-request-card');
+  const qrCard = document.getElementById('step-qr-display-card');
+
+  if (waitCard) waitCard.style.display = 'none';
+  if (reqCard) reqCard.style.display = 'none';
+  if (qrCard) qrCard.style.display = 'block';
 
   document.getElementById('qr-payee-title').innerText = merchantSettings.payeeName;
   document.getElementById('qr-display-amount').innerText = `₹ ${parseFloat(reqData.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
@@ -162,8 +159,10 @@ function showQrReceivedScreen(reqData) {
 
   // DISPLAY ONLY THE SPECIFIC QR IMAGE SENT BY ADMIN
   const assignedImg = document.getElementById('assigned-qr-img');
-  assignedImg.src = reqData.assignedQrUrl;
-  assignedImg.style.display = 'inline-block';
+  if (assignedImg) {
+    assignedImg.src = reqData.assignedQrUrl;
+    assignedImg.style.display = 'inline-block';
+  }
 
   const upiUri = `upi://pay?pa=${encodeURIComponent(merchantSettings.upiId)}&pn=${encodeURIComponent(merchantSettings.payeeName)}&am=${reqData.amount}&cu=INR&tn=${encodeURIComponent(reqData.serviceNote || 'Payment')}`;
 
@@ -171,6 +170,9 @@ function showQrReceivedScreen(reqData) {
   if (document.getElementById('phonepe-btn')) document.getElementById('phonepe-btn').href = upiUri;
   if (document.getElementById('paytm-btn')) document.getElementById('paytm-btn').href = upiUri;
   if (document.getElementById('bhim-btn')) document.getElementById('bhim-btn').href = upiUri;
+
+  showToast('Payment QR Code received from Admin!', 'success');
+  try { lucide.createIcons(); } catch(e){}
 }
 
 function clearSavedSession() {
