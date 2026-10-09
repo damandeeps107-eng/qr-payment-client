@@ -11,12 +11,17 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const DATA_DIR = path.join(__dirname, 'data');
+// Vercel serverless compatible storage paths (/tmp for serverless environment)
+const UPLOADS_DIR = process.env.VERCEL ? '/tmp' : path.join(__dirname, 'uploads');
+const DATA_DIR = process.env.VERCEL ? '/tmp' : path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
-if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+} catch (e) {
+  console.log('Dir init note:', e.message);
+}
 
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -38,7 +43,7 @@ const defaultDB = {
     upiId: 'payment.express@upi',
     payeeName: 'Inspire Technologies',
     adminPin: '1234',
-    defaultQrImageUrl: '', // Default QR if admin wants to send default
+    defaultQrImageUrl: '',
     bankDetails: {
       accountName: 'Inspire Technologies Pvt Ltd',
       accountNumber: '987654321012',
@@ -49,26 +54,33 @@ const defaultDB = {
   requests: []
 };
 
+// In-memory memory fallback if disk writes fail on serverless
+let memoryDB = null;
+
 function readDB() {
   try {
+    if (memoryDB) return memoryDB;
     if (!fs.existsSync(DB_FILE)) {
-      fs.writeFileSync(DB_FILE, JSON.stringify(defaultDB, null, 2));
-      return defaultDB;
+      memoryDB = { ...defaultDB };
+      try { fs.writeFileSync(DB_FILE, JSON.stringify(defaultDB, null, 2)); } catch(e){}
+      return memoryDB;
     }
     const db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
     if (!Array.isArray(db.requests)) db.requests = [];
     if (!db.settings) db.settings = defaultDB.settings;
+    memoryDB = db;
     return db;
   } catch (err) {
-    return defaultDB;
+    return memoryDB || defaultDB;
   }
 }
 
 function writeDB(data) {
+  memoryDB = data;
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
   } catch (err) {
-    console.error('Write DB Error:', err);
+    console.error('Write DB Warning (Serverless memory kept):', err.message);
   }
 }
 
@@ -108,7 +120,7 @@ app.post('/api/request-qr', (req, res) => {
     clientPhone: clientPhone.trim(),
     serviceNote: (serviceNote || 'Payment Request').trim(),
     amount: parseFloat(amount),
-    status: 'Pending Admin QR', // Status: Pending Admin QR -> QR Sent -> Payment Submitted -> Approved / Rejected
+    status: 'Pending Admin QR',
     assignedQrUrl: '',
     utr: '',
     screenshotUrl: '',
@@ -144,7 +156,7 @@ app.get('/api/request-status/:id', (req, res) => {
   });
 });
 
-// 5. Admin Gets All Requests (Pending & Completed)
+// 5. Admin Gets All Requests
 app.get('/api/admin/requests', (req, res) => {
   const pin = req.headers['x-admin-pin'];
   const db = readDB();
@@ -156,7 +168,7 @@ app.get('/api/admin/requests', (req, res) => {
   res.json({ success: true, requests: db.requests, settings: db.settings });
 });
 
-// 6. Admin Attaches Custom QR Image for a Specific Request
+// 6. Admin Attaches Custom QR Image
 app.post('/api/admin/attach-qr/:id', upload.single('qrImage'), (req, res) => {
   const pin = req.body.pin || req.headers['x-admin-pin'];
   const db = readDB();
@@ -288,11 +300,16 @@ app.delete('/api/admin/requests/:id', (req, res) => {
   res.json({ success: true, message: 'Deleted' });
 });
 
-// SPA Fallback
+// Serve index.html SPA fallback
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Real-Time QR Dispatcher running at http://localhost:${PORT}`);
-});
+// Vercel Serverless Export
+module.exports = app;
+
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`🚀 Real-Time QR Dispatcher running on http://localhost:${PORT}`);
+  });
+}
