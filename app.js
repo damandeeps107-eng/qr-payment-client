@@ -1,6 +1,8 @@
-const bc = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('qr_payment_channel') : null;
+const MASTER_INDEX_ID = "ff808181a09d98f701a11ecd111827bb";
+const CLOUD_API_BASE = "https://api.restful-api.dev/objects";
 
-let currentRequestId = null;
+let currentCloudId = localStorage.getItem('active_cloud_id') || null;
+let currentRequestId = localStorage.getItem('active_qr_request_id') || null;
 let pollTimer = null;
 let merchantSettings = {
   payeeName: 'Inspire Technologies',
@@ -16,20 +18,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const utrForm = document.getElementById('utr-submit-form');
   if (utrForm) utrForm.addEventListener('submit', handleUtrSubmit);
 
-  if (bc) {
-    bc.onmessage = (event) => {
-      if (event.data && event.data.type === 'QR_SENT' && event.data.requestId === currentRequestId) {
-        showQrReceivedScreen(event.data.request);
-      }
-    };
-  }
-
-  // Restore session
-  const savedReqId = localStorage.getItem('active_qr_request_id');
-  if (savedReqId) {
-    currentRequestId = savedReqId;
+  // Restore active session if client refreshed or closed tab
+  if (currentCloudId) {
     showWaitingScreen();
-    checkAndPollRequestStatus(currentRequestId);
+    startPollingCloudStatus(currentCloudId);
   }
 });
 
@@ -47,16 +39,20 @@ async function handleQrRequest(e) {
   }
 
   const reqId = 'REQ-' + Math.floor(100000 + Math.random() * 900000);
-  const requestData = {
-    id: reqId,
-    clientName: clientName || 'Client',
-    clientPhone,
-    amount: parseFloat(amount),
-    serviceNote: serviceNote || 'Payment Request',
-    status: 'Pending Admin QR',
-    assignedQrUrl: '',
-    utr: '',
-    date: new Date().toISOString()
+  const requestPayload = {
+    name: reqId,
+    data: {
+      id: reqId,
+      clientName: clientName || 'Client',
+      clientPhone,
+      amount: parseFloat(amount),
+      serviceNote: serviceNote || 'Payment Request',
+      status: 'Pending Admin QR', // Strictly Pending Admin QR!
+      assignedQrUrl: '', // NO QR attached yet!
+      utr: '',
+      screenshotUrl: '',
+      date: new Date().toISOString()
+    }
   };
 
   const submitBtn = e.target.querySelector('button[type="submit"]');
@@ -64,31 +60,64 @@ async function handleQrRequest(e) {
   submitBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Sending Request...';
   lucide.createIcons();
 
-  // 1. Store in LocalStorage
-  localStorage.setItem(`qr_req_${reqId}`, JSON.stringify(requestData));
-  localStorage.setItem('active_qr_request_id', reqId);
-  currentRequestId = reqId;
-
-  if (bc) {
-    bc.postMessage({ type: 'NEW_REQUEST', request: requestData });
-  }
-
-  // 2. Post to Vercel Serverless API /api/requests
   try {
-    await fetch('/api/requests', {
+    // 1. Create Cloud Object on Central Cloud Database
+    const res = await fetch(CLOUD_API_BASE, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientPhone, clientName, amount, serviceNote })
+      body: JSON.stringify(requestPayload)
     });
-  } catch (err) {}
+    const createdObj = await res.json();
 
-  submitBtn.disabled = false;
-  submitBtn.innerHTML = '<i data-lucide="send"></i> Request QR Code From Admin';
-  lucide.createIcons();
+    if (createdObj && createdObj.id) {
+      currentCloudId = createdObj.id;
+      currentRequestId = reqId;
+      localStorage.setItem('active_cloud_id', currentCloudId);
+      localStorage.setItem('active_qr_request_id', currentRequestId);
 
-  showWaitingScreen();
-  checkAndPollRequestStatus(currentRequestId);
-  showToast('Request sent to Admin! Waiting for Admin to attach QR...', 'success');
+      // 2. Append to Master Index so Admin Panel sees it live
+      await appendToMasterIndex(currentCloudId);
+
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = '<i data-lucide="send"></i> Request QR Code From Admin';
+      lucide.createIcons();
+
+      // Show Waiting Screen ONLY
+      showWaitingScreen();
+      startPollingCloudStatus(currentCloudId);
+      showToast('Request sent to Admin! Waiting for Admin to send QR...', 'info');
+    } else {
+      throw new Error('Failed to create cloud request');
+    }
+  } catch (err) {
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = '<i data-lucide="send"></i> Request QR Code From Admin';
+    lucide.createIcons();
+    showToast('Network error sending request. Please try again.', 'error');
+  }
+}
+
+async function appendToMasterIndex(cloudId) {
+  try {
+    const res = await fetch(`${CLOUD_API_BASE}/${MASTER_INDEX_ID}`);
+    const masterObj = await res.json();
+    let requestsList = (masterObj && masterObj.data && Array.isArray(masterObj.data.requests)) ? masterObj.data.requests : [];
+
+    if (!requestsList.includes(cloudId)) {
+      requestsList.unshift(cloudId);
+    }
+
+    await fetch(`${CLOUD_API_BASE}/${MASTER_INDEX_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'QR_DISPATCHER_MASTER_INDEX',
+        data: { requests: requestsList }
+      })
+    });
+  } catch (err) {
+    console.error('Master Index update error:', err);
+  }
 }
 
 function showWaitingScreen() {
@@ -97,35 +126,30 @@ function showWaitingScreen() {
   document.getElementById('step-qr-display-card').style.display = 'none';
 }
 
-function checkAndPollRequestStatus(reqId) {
+function startPollingCloudStatus(cloudId) {
   if (pollTimer) clearInterval(pollTimer);
 
   pollTimer = setInterval(async () => {
-    // Check local storage update first
-    const localData = JSON.parse(localStorage.getItem(`qr_req_${reqId}`));
-    if (localData && localData.status === 'QR Sent' && localData.assignedQrUrl) {
-      clearInterval(pollTimer);
-      showQrReceivedScreen(localData);
-      return;
-    }
-
-    // Poll Vercel Serverless API
     try {
-      const res = await fetch(`/api/requests?id=${reqId}`);
-      const data = await res.json();
-      if (data && data.request) {
-        const reqItem = data.request;
-        if (reqItem.status === 'QR Sent' && reqItem.assignedQrUrl) {
+      const res = await fetch(`${CLOUD_API_BASE}/${cloudId}`);
+      const obj = await res.json();
+
+      if (obj && obj.data) {
+        const reqData = obj.data;
+
+        // ONLY transition to QR Screen IF Admin has attached a specific QR image!
+        if (reqData.status === 'QR Sent' && reqData.assignedQrUrl && reqData.assignedQrUrl.length > 0) {
           clearInterval(pollTimer);
-          localStorage.setItem(`qr_req_${reqId}`, JSON.stringify(reqItem));
-          showQrReceivedScreen(reqItem);
+          showQrReceivedScreen(reqData);
         }
       }
-    } catch (err) {}
+    } catch (err) {
+      console.error('Polling cloud error:', err);
+    }
   }, 2000);
 }
 
-function showQrReceivedScreen(reqItem) {
+function showQrReceivedScreen(reqData) {
   if (document.getElementById('step-waiting-card')) document.getElementById('step-waiting-card').style.display = 'none';
   document.getElementById('step-request-card').style.display = 'none';
   
@@ -133,14 +157,15 @@ function showQrReceivedScreen(reqItem) {
   displayCard.style.display = 'block';
 
   document.getElementById('qr-payee-title').innerText = merchantSettings.payeeName;
-  document.getElementById('qr-display-amount').innerText = `₹ ${parseFloat(reqItem.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+  document.getElementById('qr-display-amount').innerText = `₹ ${parseFloat(reqData.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
   document.getElementById('upi-id-display').innerText = merchantSettings.upiId;
 
+  // DISPLAY ONLY THE SPECIFIC QR IMAGE SENT BY ADMIN
   const assignedImg = document.getElementById('assigned-qr-img');
-  assignedImg.src = reqItem.assignedQrUrl;
+  assignedImg.src = reqData.assignedQrUrl;
   assignedImg.style.display = 'inline-block';
 
-  const upiUri = `upi://pay?pa=${encodeURIComponent(merchantSettings.upiId)}&pn=${encodeURIComponent(merchantSettings.payeeName)}&am=${reqItem.amount}&cu=INR&tn=${encodeURIComponent(reqItem.serviceNote || 'Payment')}`;
+  const upiUri = `upi://pay?pa=${encodeURIComponent(merchantSettings.upiId)}&pn=${encodeURIComponent(merchantSettings.payeeName)}&am=${reqData.amount}&cu=INR&tn=${encodeURIComponent(reqData.serviceNote || 'Payment')}`;
 
   if (document.getElementById('gpay-btn')) document.getElementById('gpay-btn').href = upiUri;
   if (document.getElementById('phonepe-btn')) document.getElementById('phonepe-btn').href = upiUri;
@@ -150,7 +175,9 @@ function showQrReceivedScreen(reqItem) {
 
 function clearSavedSession() {
   if (pollTimer) clearInterval(pollTimer);
+  localStorage.removeItem('active_cloud_id');
   localStorage.removeItem('active_qr_request_id');
+  currentCloudId = null;
   currentRequestId = null;
 
   if (document.getElementById('step-waiting-card')) document.getElementById('step-waiting-card').style.display = 'none';
@@ -173,7 +200,7 @@ function closeUtrModal() {
 async function handleUtrSubmit(e) {
   e.preventDefault();
 
-  if (!currentRequestId) return;
+  if (!currentCloudId) return;
 
   const utr = document.getElementById('utrInput').value.trim();
   const fileInput = document.getElementById('utrScreenshotInput');
@@ -188,22 +215,23 @@ async function handleUtrSubmit(e) {
     screenshotUrl = await fileToDataUrl(fileInput.files[0]);
   }
 
-  const localReq = JSON.parse(localStorage.getItem(`qr_req_${currentRequestId}`)) || {};
-  localReq.utr = utr;
-  localReq.screenshotUrl = screenshotUrl;
-  localReq.status = 'Payment Submitted';
-  localStorage.setItem(`qr_req_${currentRequestId}`, JSON.stringify(localReq));
-
   try {
-    await fetch('/api/requests', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: currentRequestId, utr, screenshotUrl, status: 'Payment Submitted' })
-    });
-  } catch (err) {}
+    const res = await fetch(`${CLOUD_API_BASE}/${currentCloudId}`);
+    const obj = await res.json();
+    if (obj && obj.data) {
+      const updatedData = { ...obj.data, utr, screenshotUrl, status: 'Payment Submitted' };
+      await fetch(`${CLOUD_API_BASE}/${currentCloudId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: obj.name, data: updatedData })
+      });
+    }
 
-  closeUtrModal();
-  showToast('Payment UTR submitted! Admin will verify soon.', 'success');
+    closeUtrModal();
+    showToast('Payment UTR submitted! Admin will verify soon.', 'success');
+  } catch (err) {
+    showToast('Error submitting UTR', 'error');
+  }
 }
 
 function fileToDataUrl(file) {
