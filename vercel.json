@@ -1,5 +1,6 @@
 {
-  "cleanUrls": true,
+  "buildCommand": "echo 'Build Completed'",
+  "outputDirectory": ".",
   "rewrites": [
     {
       "source": "/api/(.*)",
