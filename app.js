@@ -11,6 +11,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const utrForm = document.getElementById('utr-submit-form');
   utrForm.addEventListener('submit', handleUtrSubmit);
+
+  // Check URL query parameter ?req=REQ-XXXXXX OR localStorage active request
+  const urlParams = new URLSearchParams(window.location.search);
+  const paramReqId = urlParams.get('req');
+  const savedReqId = localStorage.getItem('active_qr_request_id');
+
+  const reqToRestore = paramReqId || savedReqId;
+  if (reqToRestore) {
+    currentRequestId = reqToRestore;
+    localStorage.setItem('active_qr_request_id', currentRequestId);
+    checkAndRestoreRequest(currentRequestId);
+  }
 });
 
 async function loadSettings() {
@@ -23,6 +35,30 @@ async function loadSettings() {
     }
   } catch (err) {
     showToast('Failed to load settings', 'error');
+  }
+}
+
+async function checkAndRestoreRequest(reqId) {
+  try {
+    const res = await fetch(`/api/request-status/${reqId}`);
+    const data = await res.json();
+
+    if (data.success && data.request) {
+      const reqItem = data.request;
+
+      if (reqItem.status === 'QR Sent' && reqItem.assignedQrUrl) {
+        showQrReceivedScreen(reqItem, data.settings);
+      } else {
+        // Still pending or payment submitted
+        showWaitingScreen();
+        startPollingRequestStatus();
+      }
+    } else {
+      // Stale or invalid request ID
+      localStorage.removeItem('active_qr_request_id');
+    }
+  } catch (err) {
+    console.error('Restore request error:', err);
   }
 }
 
@@ -58,6 +94,8 @@ async function handleQrRequest(e) {
 
     if (data.success) {
       currentRequestId = data.request.id;
+      // Save active session to localStorage so back/refresh/closing tab preserves state!
+      localStorage.setItem('active_qr_request_id', currentRequestId);
       showWaitingScreen();
       startPollingRequestStatus();
     } else {
@@ -110,6 +148,21 @@ function showQrReceivedScreen(reqItem, settings) {
   assignedImg.src = reqItem.assignedQrUrl;
 
   showToast('Payment QR Code received from Admin!', 'success');
+}
+
+function clearSavedSession() {
+  if (pollTimer) clearInterval(pollTimer);
+  localStorage.removeItem('active_qr_request_id');
+  currentRequestId = null;
+
+  document.getElementById('step-waiting-card').style.display = 'none';
+  document.getElementById('step-qr-display-card').style.display = 'none';
+  document.getElementById('step-request-card').style.display = 'block';
+
+  // Clear URL query string if present
+  if (window.history.replaceState) {
+    window.history.replaceState(null, null, window.location.pathname);
+  }
 }
 
 function openUtrModal() {
