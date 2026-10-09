@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Request Payment QR Code | Instant Pay</title>
+  <!-- Google Fonts & Lucide Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- QRCode.js Library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .pulse-box {
+      animation: pulse 1.8s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0% { transform: scale(0.98); opacity: 0.8; }
+      50% { transform: scale(1.02); opacity: 1; }
+      100% { transform: scale(0.98); opacity: 0.8; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container" style="max-width: 540px;">
+    <!-- Navbar (No Admin Links) -->
+    <header class="navbar" style="padding: 14px 20px; justify-content: center;">
+      <div class="brand">
+        <div class="brand-icon">
+          <i data-lucide="qr-code"></i>
+        </div>
+        <div style="text-align: center;">
+          <div class="brand-title" id="merchant-name-header">Inspire Technologies</div>
+          <div class="brand-subtitle">Live Payment QR Portal</div>
+        </div>
+      </div>
+    </header>
+
+    <!-- STATE A: Request Form -->
+    <div class="glass-card" id="step-request-card">
+      <h2 style="font-size: 1.3rem; margin-bottom: 8px; color: #fff; text-align: center;">
+        📱 Payment QR Code Mangwayein
+      </h2>
+      <p style="font-size: 0.85rem; color: var(--text-muted); text-align: center; margin-bottom: 20px;">
+        Apna Mobile Number aur Amount daal kar Request bhejein. Admin aapko QR image send kar denge.
+      </p>
+
+      <form id="request-qr-form">
+        <div class="form-group">
+          <label class="form-label">Mobile Number *</label>
+          <input type="tel" id="clientPhone" class="form-control" placeholder="10-digit Mobile Number" required style="font-size: 1.1rem;">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Client Name (Optional)</label>
+          <input type="text" id="clientName" class="form-control" placeholder="Your full name">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Amount (₹ INR) *</label>
+          <input type="number" id="amount" class="form-control" placeholder="Enter Amount in ₹" min="1" required style="font-size: 1.3rem; font-weight: 700; color: #38bdf8;">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Purpose / Service Note (Optional)</label>
+          <input type="text" id="serviceNote" class="form-control" placeholder="e.g. Design Work / Service Fee">
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 14px; font-size: 1.1rem; font-weight: 700; justify-content: center; margin-top: 10px; border-radius: 12px;">
+          <i data-lucide="send"></i> Request QR Code From Admin
+        </button>
+      </form>
+    </div>
+
+    <!-- STATE B: Waiting Screen -->
+    <div class="glass-card pulse-box" id="step-waiting-card" style="display: none; text-align: center; padding: 40px 20px;">
+      <div class="brand-icon" style="margin: 0 auto 16px auto; width: 64px; height: 64px; font-size: 32px; background: linear-gradient(135deg, #f59e0b, #d97706);">
+        <i data-lucide="clock"></i>
+      </div>
+      <h3 style="color: #fff; font-size: 1.25rem; margin-bottom: 8px;">Request Sent To Admin!</h3>
+      <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 20px;">
+        Kripya 5-10 second wait karein... Admin aapke liye Payment QR Code bhej rahe hain.
+      </p>
+
+      <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); padding: 12px; border-radius: 10px; font-size: 0.85rem; color: #fbbf24; display: flex; align-items: center; justify-content: center; gap: 8px;">
+        <i data-lucide="loader-2" class="spin"></i> Waiting for Admin to attach QR image...
+      </div>
+    </div>
+
+    <!-- STATE C: QR Received Screen -->
+    <div class="glass-card" id="step-qr-display-card" style="display: none; text-align: center;">
+      <div style="background: rgba(16, 185, 129, 0.15); color: #34d399; padding: 6px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; margin-bottom: 12px;">
+        <i data-lucide="check-circle"></i> Admin Has Sent Your Payment QR
+      </div>
+
+      <h3 style="font-size: 1.1rem; color: #fff; margin-bottom: 4px;" id="qr-payee-title">Inspire Technologies</h3>
+      <div style="font-size: 1.8rem; font-weight: 800; color: #38bdf8; margin-bottom: 14px;" id="qr-display-amount">₹ 0.00</div>
+
+      <div class="qr-container" style="margin-bottom: 16px;">
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 6px;">
+          Scan with GPay, PhonePe, Paytm, BHIM or any UPI App
+        </div>
+
+        <div class="qr-box">
+          <img id="assigned-qr-img" src="" alt="Payment QR Code Sent By Admin" style="max-width: 240px; height: 240px; border-radius: 10px; object-fit: contain;">
+        </div>
+
+        <div class="upi-details" style="margin-top: 12px;">
+          <div>
+            <span style="font-size: 0.72rem; color: var(--text-muted); display: block;">UPI ID</span>
+            <span class="upi-id-text" id="upi-id-display">payment@upi</span>
+          </div>
+          <button class="copy-btn" onclick="copyUpiId()">
+            <i data-lucide="copy" style="width: 14px;"></i> Copy
+          </button>
+        </div>
+      </div>
+
+      <div style="margin-top: 20px;">
+        <button class="btn btn-success" style="width: 100%; justify-content: center; padding: 14px; font-size: 1rem;" onclick="openUtrModal()">
+          <i data-lucide="check-square"></i> I Have Paid (Enter UTR)
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- UTR Submission Modal -->
+  <div class="modal-backdrop" id="utrModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 style="color: #fff; display: flex; align-items: center; gap: 8px;">
+          <i data-lucide="shield-check" style="color: var(--accent);"></i> Confirm Payment Proof
+        </h3>
+        <button class="close-btn" onclick="closeUtrModal()">&times;</button>
+      </div>
+
+      <form id="utr-submit-form">
+        <div class="form-group">
+          <label class="form-label">12-digit UTR / UPI Ref No. *</label>
+          <input type="text" id="utrInput" class="form-control" placeholder="e.g. 4289XXXXXXXX" required>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Payment Screenshot (Optional)</label>
+          <input type="file" id="utrScreenshotInput" class="form-control" accept="image/*">
+        </div>
+
+        <button type="submit" class="btn btn-success" style="width: 100%; justify-content: center; padding: 12px; margin-top: 10px;">
+          <i data-lucide="send"></i> Submit Payment Proof
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+  <script src="app.js"></script>
+</body>
+</html>
