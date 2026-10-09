@@ -1,68 +1,40 @@
-let currentRequestId = null;
-let currentSettings = null;
-let pollTimer = null;
+let currentRequest = null;
+let qrcodeInstance = null;
 
-document.addEventListener('DOMContentLoaded', async () => {
+// Settings (Persisted in localStorage)
+let merchantSettings = JSON.parse(localStorage.getItem('qr_merchant_settings')) || {
+  payeeName: 'Inspire Technologies',
+  upiId: 'payment.express@upi',
+  customQrUrl: ''
+};
+
+document.addEventListener('DOMContentLoaded', () => {
   lucide.createIcons();
-  await loadSettings();
+  renderMerchantHeader();
 
   const requestForm = document.getElementById('request-qr-form');
-  requestForm.addEventListener('submit', handleQrRequest);
+  if (requestForm) requestForm.addEventListener('submit', handleQrRequest);
 
   const utrForm = document.getElementById('utr-submit-form');
-  utrForm.addEventListener('submit', handleUtrSubmit);
+  if (utrForm) utrForm.addEventListener('submit', handleUtrSubmit);
 
-  // Check URL query parameter ?req=REQ-XXXXXX OR localStorage active request
+  // Restore session from localStorage or URL query string ?req=REQ-XXXXXX
   const urlParams = new URLSearchParams(window.location.search);
   const paramReqId = urlParams.get('req');
-  const savedReqId = localStorage.getItem('active_qr_request_id');
+  const savedReq = JSON.parse(localStorage.getItem('active_qr_request'));
 
-  const reqToRestore = paramReqId || savedReqId;
-  if (reqToRestore) {
-    currentRequestId = reqToRestore;
-    localStorage.setItem('active_qr_request_id', currentRequestId);
-    checkAndRestoreRequest(currentRequestId);
+  if (savedReq) {
+    currentRequest = savedReq;
+    showQrReceivedScreen(currentRequest);
   }
 });
 
-async function loadSettings() {
-  try {
-    const res = await fetch('/api/settings');
-    const data = await res.json();
-    if (data.success) {
-      currentSettings = data.settings;
-      document.getElementById('merchant-name-header').innerText = currentSettings.payeeName;
-    }
-  } catch (err) {
-    showToast('Failed to load settings', 'error');
-  }
+function renderMerchantHeader() {
+  const headerEl = document.getElementById('merchant-name-header');
+  if (headerEl) headerEl.innerText = merchantSettings.payeeName;
 }
 
-async function checkAndRestoreRequest(reqId) {
-  try {
-    const res = await fetch(`/api/request-status/${reqId}`);
-    const data = await res.json();
-
-    if (data.success && data.request) {
-      const reqItem = data.request;
-
-      if (reqItem.status === 'QR Sent' && reqItem.assignedQrUrl) {
-        showQrReceivedScreen(reqItem, data.settings);
-      } else {
-        // Still pending or payment submitted
-        showWaitingScreen();
-        startPollingRequestStatus();
-      }
-    } else {
-      // Stale or invalid request ID
-      localStorage.removeItem('active_qr_request_id');
-    }
-  } catch (err) {
-    console.error('Restore request error:', err);
-  }
-}
-
-async function handleQrRequest(e) {
+function handleQrRequest(e) {
   e.preventDefault();
 
   const clientPhone = document.getElementById('clientPhone').value.trim();
@@ -75,91 +47,72 @@ async function handleQrRequest(e) {
     return;
   }
 
-  try {
-    const submitBtn = e.target.querySelector('button[type="submit"]');
-    submitBtn.disabled = true;
-    submitBtn.innerHTML = '<i data-lucide="loader" class="spin"></i> Sending Request...';
-    lucide.createIcons();
+  const reqId = 'REQ-' + Math.floor(100000 + Math.random() * 900000);
 
-    const res = await fetch('/api/request-qr', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientPhone, clientName, amount, serviceNote })
-    });
+  currentRequest = {
+    id: reqId,
+    clientName: clientName || 'Client',
+    clientPhone,
+    amount: parseFloat(amount),
+    serviceNote: serviceNote || 'Payment',
+    date: new Date().toISOString()
+  };
 
-    const data = await res.json();
-    submitBtn.disabled = false;
-    submitBtn.innerHTML = '<i data-lucide="send"></i> Request QR Code From Admin';
-    lucide.createIcons();
+  // Save session in localStorage
+  localStorage.setItem('active_qr_request', JSON.stringify(currentRequest));
 
-    if (data.success) {
-      currentRequestId = data.request.id;
-      // Save active session to localStorage so back/refresh/closing tab preserves state!
-      localStorage.setItem('active_qr_request_id', currentRequestId);
-      showWaitingScreen();
-      startPollingRequestStatus();
-    } else {
-      showToast(data.message || 'Error submitting request', 'error');
-    }
-  } catch (err) {
-    showToast('Server error while requesting QR code.', 'error');
-  }
+  showToast('Payment QR Code generated!', 'success');
+  showQrReceivedScreen(currentRequest);
 }
 
-function showWaitingScreen() {
+function showQrReceivedScreen(req) {
   document.getElementById('step-request-card').style.display = 'none';
-  document.getElementById('step-waiting-card').style.display = 'block';
-  document.getElementById('step-qr-display-card').style.display = 'none';
-}
+  if (document.getElementById('step-waiting-card')) document.getElementById('step-waiting-card').style.display = 'none';
+  
+  const displayCard = document.getElementById('step-qr-display-card');
+  displayCard.style.display = 'block';
 
-function startPollingRequestStatus() {
-  if (pollTimer) clearInterval(pollTimer);
+  document.getElementById('qr-payee-title').innerText = merchantSettings.payeeName;
+  document.getElementById('qr-display-amount').innerText = `₹ ${parseFloat(req.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+  document.getElementById('upi-id-display').innerText = merchantSettings.upiId;
 
-  pollTimer = setInterval(async () => {
-    if (!currentRequestId) return;
-
-    try {
-      const res = await fetch(`/api/request-status/${currentRequestId}`);
-      const data = await res.json();
-
-      if (data.success && data.request) {
-        const reqItem = data.request;
-
-        if (reqItem.status === 'QR Sent' && reqItem.assignedQrUrl) {
-          clearInterval(pollTimer);
-          showQrReceivedScreen(reqItem, data.settings);
-        }
-      }
-    } catch (err) {
-      console.error('Polling error:', err);
-    }
-  }, 2000);
-}
-
-function showQrReceivedScreen(reqItem, settings) {
-  document.getElementById('step-waiting-card').style.display = 'none';
-  document.getElementById('step-qr-display-card').style.display = 'block';
-
-  document.getElementById('qr-payee-title').innerText = settings.payeeName || 'Inspire Technologies';
-  document.getElementById('qr-display-amount').innerText = `₹ ${parseFloat(reqItem.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
-  document.getElementById('upi-id-display').innerText = settings.upiId || 'payment@upi';
+  const upiUri = `upi://pay?pa=${encodeURIComponent(merchantSettings.upiId)}&pn=${encodeURIComponent(merchantSettings.payeeName)}&am=${req.amount}&cu=INR&tn=${encodeURIComponent(req.serviceNote || 'Payment')}`;
 
   const assignedImg = document.getElementById('assigned-qr-img');
-  assignedImg.src = reqItem.assignedQrUrl;
+  const qrBox = assignedImg.parentElement;
 
-  showToast('Payment QR Code received from Admin!', 'success');
+  if (merchantSettings.customQrUrl) {
+    assignedImg.src = merchantSettings.customQrUrl;
+    assignedImg.style.display = 'inline-block';
+  } else {
+    // Generate dynamic QR using QRCode canvas
+    qrBox.innerHTML = '';
+    const qrDiv = document.createElement('div');
+    qrBox.appendChild(qrDiv);
+    new QRCode(qrDiv, {
+      text: upiUri,
+      width: 220,
+      height: 220,
+      colorDark: "#0f172a",
+      colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.H
+    });
+  }
+
+  // Update App Buttons
+  if (document.getElementById('gpay-btn')) document.getElementById('gpay-btn').href = upiUri;
+  if (document.getElementById('phonepe-btn')) document.getElementById('phonepe-btn').href = upiUri;
+  if (document.getElementById('paytm-btn')) document.getElementById('paytm-btn').href = upiUri;
+  if (document.getElementById('bhim-btn')) document.getElementById('bhim-btn').href = upiUri;
 }
 
 function clearSavedSession() {
-  if (pollTimer) clearInterval(pollTimer);
-  localStorage.removeItem('active_qr_request_id');
-  currentRequestId = null;
+  localStorage.removeItem('active_qr_request');
+  currentRequest = null;
 
-  document.getElementById('step-waiting-card').style.display = 'none';
   document.getElementById('step-qr-display-card').style.display = 'none';
   document.getElementById('step-request-card').style.display = 'block';
 
-  // Clear URL query string if present
   if (window.history.replaceState) {
     window.history.replaceState(null, null, window.location.pathname);
   }
@@ -173,51 +126,29 @@ function closeUtrModal() {
   document.getElementById('utrModal').classList.remove('show');
 }
 
-async function handleUtrSubmit(e) {
+function handleUtrSubmit(e) {
   e.preventDefault();
 
-  if (!currentRequestId) return;
-
   const utr = document.getElementById('utrInput').value.trim();
-  const file = document.getElementById('utrScreenshotInput').files[0];
-
   if (!utr) {
     showToast('Please enter the 12-digit UTR number', 'error');
     return;
   }
 
-  const formData = new FormData();
-  formData.append('requestId', currentRequestId);
-  formData.append('utr', utr);
-  if (file) formData.append('screenshot', file);
-
-  try {
-    const res = await fetch('/api/submit-utr', {
-      method: 'POST',
-      body: formData
-    });
-    const data = await res.json();
-
-    if (data.success) {
-      closeUtrModal();
-      showToast('Payment proof submitted successfully! Admin will verify soon.', 'success');
-    } else {
-      showToast(data.message || 'Error submitting UTR', 'error');
-    }
-  } catch (err) {
-    showToast('Server error', 'error');
-  }
+  closeUtrModal();
+  showToast('Payment UTR submitted successfully!', 'success');
 }
 
 function copyUpiId() {
-  if (currentSettings && currentSettings.upiId) {
-    navigator.clipboard.writeText(currentSettings.upiId);
+  if (merchantSettings.upiId) {
+    navigator.clipboard.writeText(merchantSettings.upiId);
     showToast('UPI ID copied to clipboard!', 'success');
   }
 }
 
 function showToast(msg, type = 'info') {
   const container = document.getElementById('toastContainer');
+  if (!container) return;
   const toast = document.createElement('div');
   toast.className = 'toast';
   if (type === 'error') toast.style.borderLeftColor = '#ef4444';

@@ -1,15 +1,5 @@
 {
   "name": "qr-payment-client",
   "version": "1.0.0",
-  "description": "Client Payment QR Request Portal",
-  "main": "api/index.js",
-  "scripts": {
-    "build": "echo 'Build Completed'",
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "multer": "^1.4.5-lts.1"
-  }
+  "private": true
 }

@@ -1,10 +1,4 @@
 {
-  "buildCommand": "echo 'Build Completed'",
-  "outputDirectory": ".",
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/index.js"
-    }
-  ]
+  "cleanUrls": true,
+  "trailingSlash": false
 }
