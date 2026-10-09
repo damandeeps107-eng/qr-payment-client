@@ -1,5 +1,3 @@
-// Cloud DB Endpoint with robust fallback & BroadcastChannel support
-const CLOUD_DB_BASE = "https://qr-payment-live-default-rtdb.asia-southeast1.firebasedatabase.app";
 const bc = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('qr_payment_channel') : null;
 
 let currentRequestId = null;
@@ -9,9 +7,8 @@ let merchantSettings = {
   upiId: 'payment.express@upi'
 };
 
-document.addEventListener('DOMContentLoaded', async () => {
+document.addEventListener('DOMContentLoaded', () => {
   lucide.createIcons();
-  await fetchMerchantSettings();
 
   const requestForm = document.getElementById('request-qr-form');
   if (requestForm) requestForm.addEventListener('submit', handleQrRequest);
@@ -19,7 +16,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const utrForm = document.getElementById('utr-submit-form');
   if (utrForm) utrForm.addEventListener('submit', handleUtrSubmit);
 
-  // Listen to real-time BroadcastChannel messages from Admin
   if (bc) {
     bc.onmessage = (event) => {
       if (event.data && event.data.type === 'QR_SENT' && event.data.requestId === currentRequestId) {
@@ -28,7 +24,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
   }
 
-  // Restore active session
+  // Restore session
   const savedReqId = localStorage.getItem('active_qr_request_id');
   if (savedReqId) {
     currentRequestId = savedReqId;
@@ -36,21 +32,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     checkAndPollRequestStatus(currentRequestId);
   }
 });
-
-async function fetchMerchantSettings() {
-  try {
-    const res = await fetch(`${CLOUD_DB_BASE}/settings.json`);
-    const data = await res.json();
-    if (data) {
-      merchantSettings = { ...merchantSettings, ...data };
-      const headerEl = document.getElementById('merchant-name-header');
-      if (headerEl) headerEl.innerText = merchantSettings.payeeName;
-    }
-  } catch (err) {
-    const savedSettings = JSON.parse(localStorage.getItem('qr_merchant_settings'));
-    if (savedSettings) merchantSettings = { ...merchantSettings, ...savedSettings };
-  }
-}
 
 async function handleQrRequest(e) {
   e.preventDefault();
@@ -66,7 +47,6 @@ async function handleQrRequest(e) {
   }
 
   const reqId = 'REQ-' + Math.floor(100000 + Math.random() * 900000);
-
   const requestData = {
     id: reqId,
     clientName: clientName || 'Client',
@@ -76,7 +56,6 @@ async function handleQrRequest(e) {
     status: 'Pending Admin QR',
     assignedQrUrl: '',
     utr: '',
-    screenshotUrl: '',
     date: new Date().toISOString()
   };
 
@@ -85,22 +64,21 @@ async function handleQrRequest(e) {
   submitBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Sending Request...';
   lucide.createIcons();
 
-  // Save locally in localStorage for instant 100% success guaranteed
+  // 1. Store in LocalStorage
   localStorage.setItem(`qr_req_${reqId}`, JSON.stringify(requestData));
   localStorage.setItem('active_qr_request_id', reqId);
   currentRequestId = reqId;
 
-  // Broadcast to local Admin tabs
   if (bc) {
     bc.postMessage({ type: 'NEW_REQUEST', request: requestData });
   }
 
-  // Fail-safe post to Cloud DB
+  // 2. Post to Vercel Serverless API /api/requests
   try {
-    await fetch(`${CLOUD_DB_BASE}/requests/${reqId}.json`, {
-      method: 'PUT',
+    await fetch('/api/requests', {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestData)
+      body: JSON.stringify({ clientPhone, clientName, amount, serviceNote })
     });
   } catch (err) {}
 
@@ -108,7 +86,6 @@ async function handleQrRequest(e) {
   submitBtn.innerHTML = '<i data-lucide="send"></i> Request QR Code From Admin';
   lucide.createIcons();
 
-  // Always smoothly transition to Waiting Screen with 0 errors!
   showWaitingScreen();
   checkAndPollRequestStatus(currentRequestId);
   showToast('Request sent to Admin! Waiting for Admin to attach QR...', 'success');
@@ -124,7 +101,7 @@ function checkAndPollRequestStatus(reqId) {
   if (pollTimer) clearInterval(pollTimer);
 
   pollTimer = setInterval(async () => {
-    // 1. Check local storage update
+    // Check local storage update first
     const localData = JSON.parse(localStorage.getItem(`qr_req_${reqId}`));
     if (localData && localData.status === 'QR Sent' && localData.assignedQrUrl) {
       clearInterval(pollTimer);
@@ -132,15 +109,17 @@ function checkAndPollRequestStatus(reqId) {
       return;
     }
 
-    // 2. Poll Cloud DB
+    // Poll Vercel Serverless API
     try {
-      const res = await fetch(`${CLOUD_DB_BASE}/requests/${reqId}.json`);
-      const reqItem = await res.json();
-
-      if (reqItem && reqItem.status === 'QR Sent' && reqItem.assignedQrUrl) {
-        clearInterval(pollTimer);
-        localStorage.setItem(`qr_req_${reqId}`, JSON.stringify(reqItem));
-        showQrReceivedScreen(reqItem);
+      const res = await fetch(`/api/requests?id=${reqId}`);
+      const data = await res.json();
+      if (data && data.request) {
+        const reqItem = data.request;
+        if (reqItem.status === 'QR Sent' && reqItem.assignedQrUrl) {
+          clearInterval(pollTimer);
+          localStorage.setItem(`qr_req_${reqId}`, JSON.stringify(reqItem));
+          showQrReceivedScreen(reqItem);
+        }
       }
     } catch (err) {}
   }, 2000);
@@ -216,10 +195,10 @@ async function handleUtrSubmit(e) {
   localStorage.setItem(`qr_req_${currentRequestId}`, JSON.stringify(localReq));
 
   try {
-    await fetch(`${CLOUD_DB_BASE}/requests/${currentRequestId}.json`, {
+    await fetch('/api/requests', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ utr, screenshotUrl, status: 'Payment Submitted' })
+      body: JSON.stringify({ id: currentRequestId, utr, screenshotUrl, status: 'Payment Submitted' })
     });
   } catch (err) {}
 
