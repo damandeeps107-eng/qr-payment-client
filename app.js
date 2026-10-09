@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const savedReqId = localStorage.getItem('active_qr_request_id');
   if (savedReqId) {
     currentRequestId = savedReqId;
+    showWaitingScreen();
     checkAndPollRequestStatus(currentRequestId);
   }
 });
@@ -35,9 +36,7 @@ async function fetchMerchantSettings() {
       const headerEl = document.getElementById('merchant-name-header');
       if (headerEl) headerEl.innerText = merchantSettings.payeeName;
     }
-  } catch (err) {
-    console.error('Settings fetch error:', err);
-  }
+  } catch (err) {}
 }
 
 async function handleQrRequest(e) {
@@ -61,8 +60,8 @@ async function handleQrRequest(e) {
     clientPhone,
     amount: parseFloat(amount),
     serviceNote: serviceNote || 'Payment Request',
-    status: 'Pending Admin QR',
-    assignedQrUrl: '',
+    status: 'Pending Admin QR', // Strictly Pending Admin QR!
+    assignedQrUrl: '', // NO QR attached yet!
     utr: '',
     screenshotUrl: '',
     date: new Date().toISOString()
@@ -71,10 +70,10 @@ async function handleQrRequest(e) {
   try {
     const submitBtn = e.target.querySelector('button[type="submit"]');
     submitBtn.disabled = true;
-    submitBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Requesting QR...';
+    submitBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Sending Request...';
     lucide.createIcons();
 
-    // Post to Cloud Realtime DB so Admin Panel gets it instantly!
+    // Post to Cloud DB for Admin to see
     const res = await fetch(`${CLOUD_DB_BASE}/requests/${reqId}.json`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -88,11 +87,13 @@ async function handleQrRequest(e) {
     if (res.ok) {
       currentRequestId = reqId;
       localStorage.setItem('active_qr_request_id', currentRequestId);
+      
+      // STRICTLY SHOW WAITING SCREEN ONLY! DO NOT SHOW ANY QR CODE!
       showWaitingScreen();
       checkAndPollRequestStatus(currentRequestId);
-      showToast('Request sent to Admin! Waiting for QR...', 'success');
+      showToast('Request sent to Admin! Waiting for Admin to send QR...', 'info');
     } else {
-      showToast('Error connecting to server database.', 'error');
+      showToast('Error sending request.', 'error');
     }
   } catch (err) {
     showToast('Network error while requesting QR code.', 'error');
@@ -108,17 +109,16 @@ function showWaitingScreen() {
 function checkAndPollRequestStatus(reqId) {
   if (pollTimer) clearInterval(pollTimer);
 
-  // Poll Cloud Realtime DB every 2 seconds
+  // Poll Cloud Database every 2 seconds
   pollTimer = setInterval(async () => {
     try {
       const res = await fetch(`${CLOUD_DB_BASE}/requests/${reqId}.json`);
       const reqItem = await res.json();
 
-      if (reqItem) {
-        if (reqItem.status === 'QR Sent' && reqItem.assignedQrUrl) {
-          clearInterval(pollTimer);
-          showQrReceivedScreen(reqItem);
-        }
+      // ONLY transition to QR Screen IF Admin has dispatched a specific QR image!
+      if (reqItem && reqItem.status === 'QR Sent' && reqItem.assignedQrUrl && reqItem.assignedQrUrl.length > 0) {
+        clearInterval(pollTimer);
+        showQrReceivedScreen(reqItem);
       }
     } catch (err) {
       console.error('Polling error:', err);
@@ -137,6 +137,7 @@ function showQrReceivedScreen(reqItem) {
   document.getElementById('qr-display-amount').innerText = `₹ ${parseFloat(reqItem.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
   document.getElementById('upi-id-display').innerText = merchantSettings.upiId;
 
+  // DISPLAY ONLY THE SPECIFIC QR IMAGE ATTACHED BY ADMIN!
   const assignedImg = document.getElementById('assigned-qr-img');
   assignedImg.src = reqItem.assignedQrUrl;
   assignedImg.style.display = 'inline-block';
